@@ -178,3 +178,10 @@ test('no saving is claimed without a comparable baseline', () => {
   assert.equal(s.saving, null);
   assert.match(s.savingNote, /No comparable/);
 });
+
+test('rows with an unknown fee sort after rows with a known cost', () => {
+  const xoom = estimateRow(PROVIDERS.find((p) => p.key === 'xoom')!, 100, SNAPSHOT_MID, NOW);
+  const remitly = estimateRow(PROVIDERS.find((p) => p.key === 'remitly')!, 100, SNAPSHOT_MID, NOW);
+  assert.ok(xoom.received > remitly.received, 'the unknown-fee upper bound is larger');
+  assert.deepEqual(sortRows([xoom, remitly]).map((r) => r.key), ['remitly', 'xoom']);
+});

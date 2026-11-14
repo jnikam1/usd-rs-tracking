@@ -257,7 +257,7 @@ dialog.drawer::backdrop { background: rgba(20, 18, 28, 0.45); }
 .drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s3); padding: var(--s4) var(--s5); border-bottom: 1px solid var(--rule); }
 .drawer-body { overflow-y: auto; padding: var(--s4) var(--s5) var(--s6); display: grid; gap: var(--s5); }
 .drawer-body h3 { margin-bottom: var(--s2); }
-.drawer-body .kv { font-size: 0.9375rem; }
+.drawer-body .kv { font-size: 0.9375rem; grid-template-columns: minmax(7.5rem, 0.85fr) minmax(0, 1.4fr); }
 .drawer-body .kv dd { overflow-wrap: anywhere; }
 .drawer-foot { padding: var(--s3) var(--s5); border-top: 1px solid var(--rule); display: flex; gap: var(--s2); justify-content: flex-end; flex-wrap: wrap; }
 .cautions { list-style: none; display: grid; gap: 6px; }

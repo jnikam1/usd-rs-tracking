@@ -160,10 +160,12 @@ export type SortKey = 'received' | 'fee';
 
 export function sortRows(rows: QuoteRow[], by: SortKey = 'received'): QuoteRow[] {
   const feeOrder = (f: number | null) => (f === null ? Infinity : f);
+  // Rows with an unknown fee show an upper bound, so they sort after rows whose cost is known.
+  const unknown = (r: QuoteRow) => (r.fee === null ? 1 : 0);
   return [...rows].sort((a, b) =>
     by === 'fee'
       ? feeOrder(a.fee) - feeOrder(b.fee) || b.received - a.received
-      : b.received - a.received || feeOrder(a.fee) - feeOrder(b.fee),
+      : unknown(a) - unknown(b) || b.received - a.received || feeOrder(a.fee) - feeOrder(b.fee),
   );
 }
 
