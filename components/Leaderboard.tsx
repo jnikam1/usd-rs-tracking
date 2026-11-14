@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { inr, signedPct, timeAgo, usd } from '@/lib/format';
-import { SNAPSHOT_DATE } from '@/lib/providers';
 import type { QuoteRow, QuotesPayload } from '@/lib/types';
 
 function Logo({ row }: { row: QuoteRow }) {
@@ -20,6 +19,64 @@ function Logo({ row }: { row: QuoteRow }) {
   );
 }
 
+function Row({ row, rank, best }: { row: QuoteRow; rank: number; best: boolean }) {
+  return (
+    <li className={`row${best ? ' best' : ''}`}>
+      <span className="rank">{rank}</span>
+      <Logo row={row} />
+      <span className="name">
+        {row.url ? (
+          <a href={row.url} target="_blank" rel="noopener noreferrer">
+            {row.name}
+          </a>
+        ) : (
+          row.name
+        )}
+        {row.source === 'estimate' && <span className="badge">Estimate</span>}
+        {row.kind === 'bank' && <span className="badge">Bank</span>}
+      </span>
+      <span className="got">{inr(row.received)}</span>
+      <span className="meta">
+        <span>
+          Per $1 <b>{inr(row.perUsd, 2)}</b>
+        </span>
+        <span>
+          Fee <b>{usd(row.fee)}</b>
+        </span>
+        <span>
+          Vs mid <b>{signedPct(row.vsMidPct)}</b>
+        </span>
+        {row.delivery && (
+          <span>
+            Speed <b>{row.delivery}</b>
+          </span>
+        )}
+      </span>
+    </li>
+  );
+}
+
+function MidRow({ value }: { value: number }) {
+  return (
+    <li className="row mid-ref" aria-label="Mid market reference">
+      <span className="rank" />
+      <span className="logo" aria-hidden="true">=</span>
+      <span className="name">Mid market, no fee</span>
+      <span className="got">{inr(value)}</span>
+      <span className="meta">The benchmark banks trade at. Rows below it pay less.</span>
+    </li>
+  );
+}
+
+function RowWithMid({ row, rank, best, mid }: { row: QuoteRow; rank: number; best: boolean; mid: number | null }) {
+  return (
+    <>
+      {mid !== null && <MidRow value={mid} />}
+      <Row row={row} rank={rank} best={best} />
+    </>
+  );
+}
+
 export default function Leaderboard({
   quotes,
   amount,
@@ -33,137 +90,113 @@ export default function Leaderboard({
   error: string | null;
   now: number;
 }) {
-  const [showEstimates, setShowEstimates] = useState(true);
   const [showBanks, setShowBanks] = useState(true);
-  const [expanded, setExpanded] = useState(false);
-  const LIMIT = 10;
+  const [showAllEst, setShowAllEst] = useState(false);
+  const shownAmount = quotes?.amount ?? amount;
 
-  const allRows = (quotes?.rows ?? []).filter(
-    (r) => (showEstimates || r.source === 'live') && (showBanks || r.kind !== 'bank'),
-  );
-  const rows = expanded ? allRows : allRows.slice(0, LIMIT);
+  const visible = (quotes?.rows ?? []).filter((r) => showBanks || r.kind !== 'bank');
+  const hasLive = (quotes?.liveCount ?? 0) > 0;
+  const main = visible.filter((r) => r.source === (hasLive ? 'live' : 'estimate'));
+  const extra = hasLive ? visible.filter((r) => r.source === 'estimate') : [];
+  const extraShown = showAllEst ? extra : extra.slice(0, 5);
   const mid = quotes?.mid;
-  const bestKey = rows.find((r) => r.source === 'live')?.key ?? rows[0]?.key;
+  const midIndex = mid ? main.findIndex((r) => r.received < mid * shownAmount) : -1;
+
   const newestLive = (quotes?.rows ?? [])
     .filter((r) => r.source === 'live' && r.collectedAt)
     .map((r) => Date.parse(r.collectedAt!))
     .filter(Number.isFinite)
     .sort((a, b) => b - a)[0];
-  const midIndex = mid ? rows.findIndex((r) => r.received < mid * (quotes?.amount ?? amount)) : -1;
 
   return (
-    <>
+    <div aria-busy={loading} style={{ opacity: loading ? 0.6 : 1, transition: 'opacity .2s' }}>
       <div className="section-head">
-        <h2 id="board-title">Who pays the most for {usd(quotes?.amount ?? amount)}</h2>
+        <h2 id="board-title">Who pays the most for {usd(shownAmount)}</h2>
       </div>
       <p className="section-sub">
-        Ranked by rupees received after the fee and the exchange rate markup, funded from a US bank account.
-        {quotes && quotes.liveCount > 0 && (
-          <> Live quotes come from Wise&rsquo;s comparison feed{newestLive ? `, newest ${timeAgo(newestLive, now)}` : ''}.</>
-        )}{' '}
-        Estimates apply each provider&rsquo;s spread from the {new Date(SNAPSHOT_DATE).toLocaleDateString('en-US', { day: 'numeric', month: 'short', timeZone: 'UTC' })} snapshot to today&rsquo;s rate.
+        Ranked by rupees received after the fee and the exchange rate markup, paying from a US bank account.
+        {hasLive && (
+          <>
+            {' '}
+            Live quotes from Wise&rsquo;s comparison feed{newestLive ? `, newest ${timeAgo(newestLive, now)}` : ''}.
+          </>
+        )}
       </p>
 
-      {quotes && quotes.liveCount === 0 && (
+      {quotes && !hasLive && (
         <p className="warn">
-          The live comparison feed did not answer{quotes.liveError ? ` (${quotes.liveError})` : ''}, so every row below is an
-          estimate. Confirm in the provider&rsquo;s app before sending.
+          The live comparison feed did not answer{quotes.liveError ? ` (${quotes.liveError})` : ''}, so these are estimates
+          from the 13 Nov snapshot applied to today&rsquo;s rate. Confirm in the provider&rsquo;s app before sending.
         </p>
       )}
       {error && <p className="warn">Could not refresh quotes: {error}</p>}
 
       <div className="board-controls">
         <label>
-          <input type="checkbox" checked={showEstimates} onChange={(e) => setShowEstimates(e.target.checked)} /> Show
-          estimates
-        </label>
-        <label>
-          <input type="checkbox" checked={showBanks} onChange={(e) => setShowBanks(e.target.checked)} /> Show banks
+          <input type="checkbox" checked={showBanks} onChange={(e) => setShowBanks(e.target.checked)} /> Include banks
         </label>
       </div>
 
-      <ol className="board" aria-busy={loading} style={{ opacity: loading ? 0.6 : 1, transition: 'opacity .2s' }}>
-        {rows.map((r, i) => (
-          <FragmentRow
-            key={r.key}
-            row={r}
-            rank={i + 1}
-            best={r.key === bestKey}
-            midBefore={i === midIndex && mid !== undefined ? mid : null}
-            amount={quotes?.amount ?? amount}
-          />
-        ))}
-        {rows.length === 0 && !loading && <li className="row">No quotes to show.</li>}
-      </ol>
-      {allRows.length > LIMIT && (
-        <button className="btn ghost show-all" type="button" onClick={() => setExpanded((x) => !x)} aria-expanded={expanded}>
-          {expanded ? `Show top ${LIMIT}` : `Show all ${allRows.length}`}
-        </button>
+      {main.length > 0 ? (
+        <ol className="board">
+          {main.map((r, i) => (
+            <RowWithMid
+              key={r.key}
+              row={r}
+              rank={i + 1}
+              best={i === 0}
+              mid={i === midIndex && mid ? mid * shownAmount : null}
+            />
+          ))}
+        </ol>
+      ) : (
+        !loading && <p className="section-sub">No quotes to show.</p>
       )}
-      <p className="board-foot">
-        Debit or credit card funding costs more (Xoom averages 0.94% on debit and 4.56% on credit). First transfer promos are
-        listed separately.
-      </p>
-    </>
-  );
-}
 
-function FragmentRow({
-  row,
-  rank,
-  best,
-  midBefore,
-  amount,
-}: {
-  row: QuoteRow;
-  rank: number;
-  best: boolean;
-  midBefore: number | null;
-  amount: number;
-}) {
-  return (
-    <>
-      {midBefore !== null && (
-        <li className="row mid-ref" aria-label="Mid market reference">
-          <span className="rank" />
-          <span className="logo" aria-hidden="true">=</span>
-          <span className="name">Mid market, no fee</span>
-          <span className="got">{inr(midBefore * amount)}</span>
-          <span className="meta">The benchmark rate banks trade at. Rows below it pay less.</span>
-        </li>
+      {quotes?.funding && (
+        <div className="funding">
+          <h3>How you pay changes what arrives</h3>
+          <p className="section-sub">Wise&rsquo;s live price for this same {usd(shownAmount)}, by funding method.</p>
+          <ul>
+            {quotes.funding.map((f) => (
+              <li key={f.method}>
+                <span>{f.method}</span>
+                <span>
+                  <b>{inr(f.received)}</b>
+                  <small>{usd(f.fee)} fee</small>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
-      <li className={`row${best ? ' best' : ''}`}>
-        <span className="rank">{rank}</span>
-        <Logo row={row} />
-        <span className="name">
-          {row.url ? (
-            <a href={row.url} target="_blank" rel="noopener noreferrer">
-              {row.name}
-            </a>
-          ) : (
-            row.name
+
+      {extra.length > 0 && (
+        <div className="extra">
+          <h3>Not in the live feed</h3>
+          <p className="section-sub">
+            Estimates: each app&rsquo;s spread on 13 Nov 2026 (SendMoneyCompare, ICICI) applied to today&rsquo;s rate with its
+            published fees. Spreads move day to day, so check the app before you send.
+          </p>
+          <ol className="board">
+            {extraShown.map((r, i) => (
+              <Row key={r.key} row={r} rank={i + 1} best={false} />
+            ))}
+          </ol>
+          {extra.length > 5 && (
+            <button
+              className="btn ghost show-all"
+              type="button"
+              onClick={() => setShowAllEst((x) => !x)}
+              aria-expanded={showAllEst}
+            >
+              {showAllEst ? 'Show fewer' : `Show all ${extra.length}`}
+            </button>
           )}
-          <span className={`badge ${row.source}`}>{row.source === 'live' ? 'Live' : 'Estimate'}</span>
-          {row.kind === 'bank' && <span className="badge">Bank</span>}
-        </span>
-        <span className="got">{inr(row.received)}</span>
-        <span className="meta">
-          <span>
-            Per $1 <b>{inr(row.perUsd, 2)}</b>
-          </span>
-          <span>
-            Fee <b>{usd(row.fee)}</b>
-          </span>
-          <span>
-            Vs mid <b>{signedPct(row.vsMidPct)}</b>
-          </span>
-          {row.delivery && (
-            <span>
-              Speed <b>{row.delivery}</b>
-            </span>
-          )}
-        </span>
-      </li>
-    </>
+        </div>
+      )}
+
+      <p className="board-foot">First transfer promos are listed separately.</p>
+    </div>
   );
 }

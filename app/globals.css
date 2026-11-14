@@ -117,7 +117,7 @@ p { margin: 0; }
 .area-promos { grid-area: promos; }
 .area-alerts { grid-area: alerts; }
 @media (min-width: 940px) {
-  .grid { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); grid-template-areas: 'chart board' 'alerts board' 'alerts promos'; column-gap: 48px; align-items: start; }
+  .grid { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); grid-template-areas: 'chart board' 'alerts board' 'promos board'; grid-template-rows: auto auto 1fr; column-gap: 48px; align-items: start; }
 }
 .section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; margin-bottom: 6px; }
 .section-sub { color: var(--muted); font-size: var(--step--1); margin-bottom: 14px; max-width: 62ch; }
@@ -207,3 +207,11 @@ details.data-table td, details.data-table th { text-align: left; padding: 4px 8p
 
 .footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--rule); color: var(--muted); font-size: var(--step--1); display: grid; gap: 6px; max-width: 80ch; }
 .footer a { color: var(--muted); }
+
+/* ---------- funding and estimates ---------- */
+.funding, .extra { margin-top: 28px; }
+.funding h3, .extra h3 { font-size: var(--step-0); margin-bottom: 2px; }
+.funding ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule-strong); }
+.funding li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 8px 6px; border-bottom: 1px solid var(--rule); }
+.funding li b { font-weight: 600; }
+.funding li small { color: var(--muted); margin-left: 6px; }

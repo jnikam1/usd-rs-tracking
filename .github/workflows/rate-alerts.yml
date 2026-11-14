@@ -2,6 +2,7 @@ name: Rate alerts
 
 # Vercel's free plan only runs crons once a day, so this hourly ping drives the rate alerts.
 # The endpoint dedupes through ntfy, so a late or repeated run never double notifies.
+# Set the repository variable APP_URL if the app is not at usd-rs-tracking.vercel.app.
 on:
   schedule:
     - cron: '17 * * * *'
@@ -17,8 +18,10 @@ jobs:
           APP_URL: ${{ vars.APP_URL || 'https://usd-rs-tracking.vercel.app' }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          if [ -n "$CRON_SECRET" ]; then
-            curl -fsS -m 60 -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/cron/check?mode=watch"
-          else
-            curl -fsS -m 60 "$APP_URL/api/cron/check?mode=watch"
-          fi
+          AUTH=()
+          if [ -n "$CRON_SECRET" ]; then AUTH=(-H "Authorization: Bearer $CRON_SECRET"); fi
+          code=$(curl -sS -m 60 -o out.json -w '%{http_code}' "${AUTH[@]}" "$APP_URL/api/cron/check?mode=watch" || echo 000)
+          echo "HTTP $code"; cat out.json 2>/dev/null; echo
+          # Not deployed yet: pass quietly instead of emailing a failure every hour.
+          if [ "$code" = "404" ] || [ "$code" = "000" ]; then echo "App not reachable at $APP_URL"; exit 0; fi
+          [ "$code" -lt 500 ]

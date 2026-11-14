@@ -49,5 +49,15 @@ export interface QuotesPayload {
   liveSource: string | null;
   liveError: string | null;
   promoEstimate: { provider: string; received: number; perUsd: number; capUsd: number; ends?: string } | null;
+  /** Wise's live price for the same transfer by funding method. */
+  funding: FundingOption[] | null;
   generatedAt: string;
+}
+
+export interface FundingOption {
+  method: string;
+  fee: number;
+  received: number;
+  perUsd: number;
+  delivery?: string;
 }

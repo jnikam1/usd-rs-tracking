@@ -5,7 +5,7 @@ import { getLiveMid } from './fx';
 import { errMsg, getJson } from './http';
 import { mockEnabled, mockLiveRows } from './mock';
 import { findProvider } from './providers';
-import type { QuoteRow, QuotesPayload } from './types';
+import type { FundingOption, QuoteRow, QuotesPayload } from './types';
 
 // Live provider quotes come from Wise's public comparison API, which collects bank funded
 // quotes from many providers (Wise included, so treat its own ranking with some care).
@@ -106,7 +106,54 @@ export async function fetchLiveQuotes(amount: number, fallbackMid: number) {
   return { rows: [...best.values()], mid, source };
 }
 
+interface WiseQuoteOption {
+  payIn?: string;
+  disabled?: boolean;
+  fee?: { total?: number };
+  targetAmount?: number;
+  formattedEstimatedDelivery?: string;
+}
+
+const FUNDING: [string, string[]][] = [
+  ['Bank transfer', ['BANK_TRANSFER']],
+  ['Debit card', ['DEBIT', 'VISA_DEBIT_OR_PREPAID', 'CARD']],
+  ['Credit card', ['CREDIT', 'VISA_CREDIT']],
+];
+
+/** Wise's public (unauthenticated) quote, which prices the same transfer for every funding method. */
+export async function fetchWiseFunding(amount: number): Promise<FundingOption[] | null> {
+  if (mockEnabled()) return null;
+  try {
+    const res = await fetch('https://api.wise.com/v3/quotes/', {
+      method: 'POST',
+      cache: 'no-store',
+      signal: AbortSignal.timeout(7000),
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ sourceCurrency: 'USD', targetCurrency: 'INR', sourceAmount: amount }),
+    });
+    if (!res.ok) return null;
+    const d = (await res.json()) as { paymentOptions?: WiseQuoteOption[] };
+    const opts = (d.paymentOptions ?? []).filter((o) => !o.disabled && typeof o.targetAmount === 'number');
+    const out: FundingOption[] = [];
+    for (const [method, codes] of FUNDING) {
+      const o = codes.map((c) => opts.find((x) => x.payIn === c)).find(Boolean);
+      if (!o) continue;
+      out.push({
+        method,
+        fee: Math.round((o.fee?.total ?? 0) * 100) / 100,
+        received: o.targetAmount as number,
+        perUsd: Math.round(((o.targetAmount as number) / amount) * 10000) / 10000,
+        delivery: o.formattedEstimatedDelivery,
+      });
+    }
+    return out.length >= 2 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getQuotes(amount: number): Promise<QuotesPayload> {
+  const fundingP = fetchWiseFunding(amount);
   const live = await getLiveMid().catch(() => null);
   let mid = live?.rate ?? NaN;
   let midSource = live?.source ?? '';
@@ -149,6 +196,7 @@ export async function getQuotes(amount: number): Promise<QuotesPayload> {
     liveSource,
     liveError,
     promoEstimate: promoEstimate(amount, mid),
+    funding: await fundingP,
     generatedAt: new Date().toISOString(),
   };
 }

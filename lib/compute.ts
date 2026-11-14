@@ -63,7 +63,7 @@ export function estimateRow(p: ProviderInfo, amount: number, mid: number): Quote
 }
 
 export function estimateAll(amount: number, mid: number, exclude: Set<string> = new Set()): QuoteRow[] {
-  return PROVIDERS.filter((p) => !exclude.has(p.key)).map((p) => estimateRow(p, amount, mid));
+  return PROVIDERS.filter((p) => !p.liveOnly && !exclude.has(p.key)).map((p) => estimateRow(p, amount, mid));
 }
 
 export function sortRows(rows: QuoteRow[]): QuoteRow[] {

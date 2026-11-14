@@ -25,6 +25,8 @@ export interface ProviderInfo {
   speed: string;
   payout: string;
   note: string;
+  /** Known only from the live feed: no snapshot data, so never estimated. */
+  liveOnly?: boolean;
 }
 
 // Wise fee points observed for ACH funded USD to INR: $1.58 on $400, $6.85 on $1,000, $27.99 on $5,000.
@@ -90,7 +92,7 @@ export const PROVIDERS: ProviderInfo[] = [
   {
     key: 'wise', name: 'Wise', url: 'https://wise.com/us/send-money/send-money-to-india', match: ['wise', 'transferwise'], kind: 'app',
     snapshotRate: SNAPSHOT_MID, fee: wiseFeeEstimate, speed: 'Often seconds', payout: 'Bank, UPI on eligible transfers',
-    note: 'Converts at mid market and charges a visible fee. Predictable, high limits.',
+    note: 'Converts at mid market and charges a visible fee. The public quote is for a bank transfer; ACH direct debit inside the app can cost less.',
   },
   {
     key: 'moneygram', name: 'MoneyGram', url: 'https://www.moneygram.com', match: ['moneygram'], kind: 'app',
@@ -121,6 +123,21 @@ export const PROVIDERS: ProviderInfo[] = [
     key: 'chase', name: 'Chase (wire)', url: 'https://www.chase.com', match: ['chase', 'jpmorganchase'], kind: 'bank',
     snapshotRate: 91.2893, fee: () => 5, speed: '1 to 5 days', payout: 'Bank',
     note: 'A typical US bank wire. Costs about 3% versus the apps.',
+  },
+  {
+    key: 'sbi', name: 'State Bank of India', url: 'https://www.onlinesbi.sbi', match: ['statebankofindia', 'sbi'], kind: 'bank',
+    snapshotRate: NaN, fee: () => 0, speed: 'Varies', payout: 'Bank', liveOnly: true,
+    note: 'Quoted in the live feed with no fee.',
+  },
+  {
+    key: 'wellsfargo', name: 'Wells Fargo', url: 'https://www.wellsfargo.com', match: ['wellsfargo'], kind: 'bank',
+    snapshotRate: NaN, fee: () => 0, speed: '1 to 5 days', payout: 'Bank', liveOnly: true,
+    note: 'A typical US bank wire rate.',
+  },
+  {
+    key: 'ofx', name: 'OFX', url: 'https://www.ofx.com/en-us/', match: ['ofx'], kind: 'app',
+    snapshotRate: NaN, fee: () => 0, speed: '1 to 2 days', payout: 'Bank', liveOnly: true,
+    note: 'Aimed at larger transfers.',
   },
 ];
 

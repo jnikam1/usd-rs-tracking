@@ -34,7 +34,7 @@ test('estimates move with the live mid', () => {
 });
 
 test('sorting puts the most rupees first', () => {
-  const rows = PROVIDERS.map((p) => estimateRow(p, 1000, SNAPSHOT_MID));
+  const rows = PROVIDERS.filter((p) => !p.liveOnly).map((p) => estimateRow(p, 1000, SNAPSHOT_MID));
   const s = sortRows(rows);
   assert.equal(s[0].key, 'paysend');
   for (let i = 1; i < s.length; i++) assert.ok(s[i - 1].received >= s[i].received);
@@ -46,6 +46,9 @@ test('provider matching handles live feed names', () => {
   assert.equal(findProvider('PayPal Xoom', 'xoom')?.key, 'xoom');
   assert.equal(findProvider('Nexus Bank', 'nexus'), undefined);
   assert.equal(findProvider('Wise', 'wise')?.key, 'wise');
+  assert.equal(findProvider('Chase (US)', 'chase')?.key, 'chase');
+  assert.equal(findProvider('State Bank of India', 'sbi')?.key, 'sbi');
+  assert.equal(findProvider('Xoom', 'xoom')?.key, 'xoom');
 });
 
 test('promo estimate caps at $6,000', () => {

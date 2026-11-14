@@ -104,12 +104,13 @@ export default function Dashboard({
   const mid = rates?.mid?.rate ?? quotes?.mid ?? null;
   const rows = quotes?.rows ?? [];
   const liveRows = rows.filter((r) => r.source === 'live');
-  const best = liveRows[0] ?? rows[0];
+  const pool = liveRows.length ? liveRows : rows;
+  const best = pool[0];
   const bestEstimate = rows.find((r) => r.source === 'estimate');
   const estimateBeatsLive = best?.source === 'live' && bestEstimate && bestEstimate.received > best.received;
-  const wise = rows.find((r) => r.key === 'wise');
-  const bank = rows.find((r) => r.key === 'chase') ?? rows.filter((r) => r.kind === 'bank').at(-1);
-  const worst = rows.at(-1);
+  const wise = pool.find((r) => r.key === 'wise');
+  const bank = pool.find((r) => r.key === 'chase') ?? pool.filter((r) => r.kind === 'bank').at(-1);
+  const worst = pool.at(-1);
   const stale = quotes && quotes.amount !== amount;
 
   const heroFigure = best ? inr(best.received) : '₹–';
