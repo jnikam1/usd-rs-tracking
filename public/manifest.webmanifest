@@ -1,0 +1,10 @@
+{
+  "name": "Har Paisa: USD to INR",
+  "short_name": "Har Paisa",
+  "description": "Live USD to INR rate, the best app for your transfer after fees, and rate alerts.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f1f4ee",
+  "theme_color": "#13261f",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
