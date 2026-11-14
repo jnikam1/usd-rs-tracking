@@ -1,0 +1,1 @@
+{"mode":"watch","dry":false,"configured":false,"mid":null,"midFreshness":null,"change24h":null,"rules":0,"skippedReasons":[],"wouldSend":[],"sent":[],"skipped":[],"failed":[],"dedupe":"Best effort: keys sent in the last 12 hours are skipped. Concurrent runs can still duplicate.","durationMs":0,"error":"NTFY_TOPIC is not configured, so there is nowhere to send alerts."}

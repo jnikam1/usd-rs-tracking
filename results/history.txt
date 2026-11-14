@@ -1,0 +1,4 @@
+1d Wise rate history 25 []
+7d Wise rate history 169 []
+30d Wise rate history 400 []
+1y Wise rate history 366 []
