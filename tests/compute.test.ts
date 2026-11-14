@@ -5,10 +5,11 @@ import { deliveryLabel, inr, isoDurationSeconds } from '../lib/format';
 import { PROVIDERS, SNAPSHOT_MID, findProvider } from '../lib/providers';
 
 test('all-in rupees per dollar includes the fee', () => {
-  const r = rowFromQuote({ key: 'x', name: 'X', amount: 1000, mid: 94.2193, fee: 6.85, rate: 94.2193, kind: 'app', source: 'live' });
+  const r = rowFromQuote({ key: 'x', name: 'X', amount: 1000, mid: 94.2193, fee: 6.85, rate: 94.2193, kind: 'app', origin: 'provider-quote' });
   // (1000 - 6.85) * 94.2193 = 93,573.88  (matches the research snapshot's Wise ₹93,574)
   assert.equal(Math.round(r.received), 93574);
-  assert.equal(r.perUsd, 93.5739);
+  assert.equal(r.effectiveRate, 93.5739);
+  assert.equal(r.totalUsd, 1000);
   assert.ok(r.vsMidPct < -0.68 && r.vsMidPct > -0.69);
   assert.equal(r.shortfall, 645);
 });
@@ -35,6 +36,7 @@ test('estimates move with the live mid', () => {
 
 test('sorting puts the most rupees first', () => {
   const rows = PROVIDERS.filter((p) => !p.liveOnly).map((p) => estimateRow(p, 1000, SNAPSHOT_MID));
+  assert.ok(rows.every((r) => r.origin === 'snapshot-model'));
   const s = sortRows(rows);
   assert.equal(s[0].key, 'paysend');
   for (let i = 1; i < s.length; i++) assert.ok(s[i - 1].received >= s[i].received);
@@ -52,8 +54,8 @@ test('provider matching handles live feed names', () => {
 });
 
 test('promo estimate caps at $6,000', () => {
-  const p = promoEstimate(10000, SNAPSHOT_MID);
-  if (!p) return; // promo expired
+  const p = promoEstimate(10000, SNAPSHOT_MID, Date.parse('2026-11-14T12:00:00Z'));
+  assert.ok(p, 'promo is active on 14 Nov 2026');
   const promoPart = 6000 * 94.67;
   assert.ok(Math.abs(p.received - (promoPart + 4000 * 93.9366)) < 5);
 });
@@ -74,7 +76,9 @@ test('history helpers', () => {
     { t: now - 23 * 3600_000, v: 94 },
     { t: now - 1 * 3600_000, v: 94.5 },
   ];
-  const c = changeOver(pts, 94.47, 24 * 3600_000, now)!;
+  const c = changeOver(pts, 94.47, 24 * 3600_000, now);
+  assert.equal(c.status, 'ok');
+  if (c.status !== 'ok') return;
   assert.equal(c.from, 94);
   assert.ok(Math.abs(c.pct - 0.5) < 0.001);
   const y = yearStats(pts, 94.2)!;
