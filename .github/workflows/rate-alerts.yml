@@ -1,27 +1,64 @@
 name: Rate alerts
 
-# Vercel's free plan only runs crons once a day, so this hourly ping drives the rate alerts.
-# The endpoint dedupes through ntfy, so a late or repeated run never double notifies.
-# Set the repository variable APP_URL if the app is not at usd-rs-tracking.vercel.app.
+# Hourly server alert check. Vercel's Hobby plan only runs crons daily, so this ping drives the
+# threshold and movement alerts; Vercel Cron sends the daily digest.
+#
+# Setup (repository Settings > Secrets and variables > Actions):
+#   variable APP_URL      e.g. https://usd-rs-tracking.vercel.app   (the job is skipped until this is set)
+#   secret   CRON_SECRET  same value as the CRON_SECRET environment variable on Vercel
+#
+# Any non 2xx answer fails the run: 401 (wrong secret), 429 (rate limited), 502 (a notification failed
+# to send) and 503 (missing configuration or no usable rate) are all reported as failures.
+
 on:
   schedule:
     - cron: '17 * * * *'
   workflow_dispatch:
+    inputs:
+      dry:
+        description: 'Dry run: evaluate without sending'
+        type: boolean
+        default: false
+
+concurrency:
+  group: rate-alerts
+  cancel-in-progress: false
 
 jobs:
   check:
+    if: ${{ vars.APP_URL != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
       - name: Run the alert check
         env:
-          APP_URL: ${{ vars.APP_URL || 'https://usd-rs-tracking.vercel.app' }}
+          APP_URL: ${{ vars.APP_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          DRY: ${{ inputs.dry && '1' || '0' }}
         run: |
-          AUTH=()
-          if [ -n "$CRON_SECRET" ]; then AUTH=(-H "Authorization: Bearer $CRON_SECRET"); fi
-          code=$(curl -sS -m 60 -o out.json -w '%{http_code}' "${AUTH[@]}" "$APP_URL/api/cron/check?mode=watch" || echo 000)
-          echo "HTTP $code"; cat out.json 2>/dev/null; echo
-          # Not deployed yet: pass quietly instead of emailing a failure every hour.
-          if [ "$code" = "404" ] || [ "$code" = "000" ]; then echo "App not reachable at $APP_URL"; exit 0; fi
-          [ "$code" -lt 500 ]
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRON_SECRET secret is not set. The app rejects unauthenticated alert checks."
+            exit 1
+          fi
+          code=$(curl -sS -m 60 -o out.json -w '%{http_code}' \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$APP_URL/api/cron/check?mode=watch&dry=$DRY") || code=000
+          # Print a summary only: the full body can include alert titles, and logs of a public repo are public.
+          python3 - "$code" <<'PY'
+          import json, sys
+          code = sys.argv[1]
+          try:
+              b = json.load(open('out.json'))
+          except Exception:
+              b = {}
+          print(f"HTTP {code}")
+          print(json.dumps({k: b.get(k) for k in ['mode', 'dry', 'configured', 'midFreshness', 'error', 'skippedReasons']}, indent=1))
+          print(f"sent={len(b.get('sent', []))} skipped={len(b.get('skipped', []))} failed={len(b.get('failed', []))}")
+          for f in b.get('failed', []):
+              print(f"::error::Delivery failed: status={f.get('status')} {f.get('error')}")
+          messages = {'000': 'App unreachable', '401': 'Unauthorized: CRON_SECRET does not match', '429': 'Rate limited',
+                      '502': 'A notification failed to send', '503': 'Missing configuration or no usable rate'}
+          if not code.startswith('2'):
+              print(f"::error::Alert check failed: {messages.get(code, 'HTTP ' + code)}")
+              sys.exit(1)
+          PY

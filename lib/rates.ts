@@ -1,27 +1,38 @@
 import 'server-only';
 import { changeOver, yearStats } from './compute';
 import { getHistory, getLiveMid } from './fx';
-import { errMsg } from './http';
-import type { RatesPayload } from './types';
+import type { Point, RatesPayload } from './types';
+import { errMsg } from './util';
 
-export async function getRates(): Promise<RatesPayload> {
+const DAY = 86400_000;
+
+export async function getRates(signal?: AbortSignal, now = Date.now()): Promise<RatesPayload> {
   const errors: string[] = [];
-  const [midR, dayR, yearR] = await Promise.allSettled([getLiveMid(), getHistory('7d'), getHistory('1y')]);
+  const [midR, weekR, yearR] = await Promise.allSettled([getLiveMid(signal), getHistory('7d', signal), getHistory('1y', signal)]);
 
-  const mid = midR.status === 'fulfilled' ? midR.value : null;
-  if (midR.status === 'rejected') errors.push(errMsg(midR.reason));
-  if (dayR.status === 'rejected') errors.push(`history 7d: ${errMsg(dayR.reason)}`);
-  if (yearR.status === 'rejected') errors.push(`history 1y: ${errMsg(yearR.reason)}`);
+  const mid = midR.status === 'fulfilled' ? midR.value.mid : null;
+  if (midR.status === 'rejected') errors.push(`mid: ${errMsg(midR.reason)}`);
+  else if (!mid) errors.push(`mid: ${midR.value.attempts.join(' | ')}`);
+  const week = weekR.status === 'fulfilled' ? weekR.value : null;
+  if (!week?.points.length) errors.push(`history 7d: ${week?.attempts.join(' | ') || errMsg((weekR as PromiseRejectedResult).reason)}`);
+  const year = yearR.status === 'fulfilled' ? yearR.value : null;
+  if (!year?.points.length) errors.push(`history 1y: ${year?.attempts.join(' | ') || errMsg((yearR as PromiseRejectedResult).reason)}`);
 
-  const change24h =
-    mid && dayR.status === 'fulfilled' ? changeOver(dayR.value.points, mid.rate, 24 * 3600_000) : null;
-  const ys = mid && yearR.status === 'fulfilled' ? yearStats(yearR.value.points, mid.rate) : null;
+  // The 24 hour change needs a current observation: the live mid if it is intraday and fresh,
+  // otherwise the latest history point. changeOver rejects either if it is too old.
+  let current: Point | null = null;
+  if (mid?.intraday && mid.freshness === 'fresh') current = { t: Date.parse(mid.observedAt), v: mid.rate };
+  else if (week?.points.length) current = week.points[week.points.length - 1];
+
+  const change24h = current
+    ? changeOver(week?.points ?? [], current, DAY, now)
+    : ({ status: 'unavailable', reason: 'No current rate.', requestedMs: DAY } as const);
 
   return {
-    mid: mid ? { rate: mid.rate, time: mid.time, source: mid.source, intraday: mid.intraday } : null,
+    mid,
     change24h,
-    year: ys && yearR.status === 'fulfilled' ? { ...ys, source: yearR.value.source } : null,
-    generatedAt: new Date().toISOString(),
+    year: mid && year?.points.length ? yearStats(year.points, mid.rate, year.source ?? '') : null,
+    generatedAt: new Date(now).toISOString(),
     errors,
   };
 }

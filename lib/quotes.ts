@@ -1,203 +1,161 @@
 import 'server-only';
-import { estimateAll, promoEstimate, rowFromQuote, sortRows } from './compute';
-import { deliveryLabel } from './format';
+import { COMPARISON_SOURCE_ID, parseComparison } from './comparison';
+import { estimateAll, sortRows, summarize } from './compute';
+import { comparisonAccess, wiseApi } from './config';
 import { getLiveMid } from './fx';
-import { errMsg, getJson } from './http';
-import { mockEnabled, mockLiveRows } from './mock';
-import { findProvider } from './providers';
-import type { FundingOption, QuoteRow, QuotesPayload } from './types';
+import { fetchJson } from './http';
+import { demoComparison, demoEnabled } from './mock';
+import { SNAPSHOT_SOURCE } from './providers';
+import type { FundingOption, QuoteRow, QuotesPayload, RejectedQuote, SourceStatus } from './types';
+import { errMsg } from './util';
+import { WISE_QUOTE_SOURCE_ID, parseWiseQuote } from './wiseQuote';
 
-// Live provider quotes come from Wise's public comparison API, which collects bank funded
-// quotes from many providers (Wise included, so treat its own ranking with some care).
-// Docs: https://docs.wise.com/api-reference/comparison
-
-interface WiseCompQuote {
-  rate?: number;
-  fee?: number;
-  receivedAmount?: number;
-  dateCollected?: string;
-  sourceCountry?: string | null;
-  targetCountry?: string | null;
-  markup?: number;
-  isConsideredMidMarketRate?: boolean;
-  deliveryEstimation?: { duration?: { min?: string | null; max?: string | null } | null } | null;
+export interface QuoteOptions {
+  /** Fetch Wise's own quote (needed for the funding method breakdown). Cron jobs skip it. */
+  wiseQuote?: boolean;
+  signal?: AbortSignal;
+  now?: number;
 }
 
-interface WiseCompProvider {
-  id?: number;
-  alias?: string;
-  name?: string;
-  type?: string;
-  logo?: string | null;
-  logos?: { normal?: { svgUrl?: string | null; pngUrl?: string | null } };
-  quotes?: WiseCompQuote[];
-}
+export async function getQuotes(amount: number, opts: QuoteOptions = {}): Promise<QuotesPayload> {
+  const now = opts.now ?? Date.now();
+  const env = process.env;
+  const demo = demoEnabled();
+  const { mid, attempts } = await getLiveMid(opts.signal);
+  if (!mid) throw new Error(`No usable mid market rate. ${attempts.join(' | ')}`);
 
-interface WiseComparison { providers?: WiseCompProvider[] }
+  const sources: SourceStatus[] = [
+    {
+      id: `mid:${mid.sourceId}`,
+      label: `Mid market rate: ${mid.source}`,
+      status: 'ok',
+      access: demo ? 'demo' : 'documented-public',
+      detail: mid.freshness === 'fresh' ? 'Fresh' : 'Stale: no fresh intraday source answered',
+      retrievedAt: mid.retrievedAt,
+    },
+  ];
+  const rejected: RejectedQuote[] = [];
+  const { base, version } = wiseApi(env);
+  const access = comparisonAccess(env);
 
-const COMPARISON_URLS = (amount: number) => [
-  `https://api.wise.com/v4/comparisons/?sourceCurrency=USD&targetCurrency=INR&sendAmount=${amount}`,
-  `https://api.transferwise.com/v4/comparisons/?sourceCurrency=USD&targetCurrency=INR&sendAmount=${amount}`,
-  `https://api.wise.com/v3/comparisons/?sourceCurrency=USD&targetCurrency=INR&sendAmount=${amount}`,
-];
-
-function pickQuote(quotes: WiseCompQuote[] = []): WiseCompQuote | undefined {
-  const usable = quotes.filter((q) => typeof q.receivedAmount === 'number' && typeof q.rate === 'number');
-  return (
-    usable.find((q) => q.sourceCountry === 'US' && q.targetCountry === 'IN') ??
-    usable.find((q) => (q.sourceCountry ?? 'US') === 'US' && (q.targetCountry ?? 'IN') === 'IN') ??
-    usable[0]
-  );
-}
-
-export async function fetchLiveQuotes(amount: number, fallbackMid: number) {
-  if (mockEnabled()) return { rows: mockLiveRows(amount), mid: fallbackMid, source: 'mock' };
-  let data: WiseComparison | null = null;
-  let source = '';
-  const errors: string[] = [];
-  for (const url of COMPARISON_URLS(amount)) {
-    try {
-      data = await getJson<WiseComparison>(url, { revalidate: 300, timeoutMs: 8000 });
-      if (!Array.isArray(data.providers) || data.providers.length === 0) throw new Error('no providers');
-      source = new URL(url).host + new URL(url).pathname;
-      break;
-    } catch (e) {
-      errors.push(errMsg(e));
-      data = null;
-    }
-  }
-  if (!data?.providers) throw new Error(errors.join(' | '));
-
-  // Use Wise's own mid market quote from the same snapshot when it is there, so spreads are consistent.
-  const wiseProvider = data.providers.find((p) => (p.alias ?? '').toLowerCase() === 'wise');
-  const wiseQuote = pickQuote(wiseProvider?.quotes);
-  const mid = wiseQuote?.isConsideredMidMarketRate !== false && wiseQuote?.rate ? wiseQuote.rate : fallbackMid;
-
-  const rows: QuoteRow[] = [];
-  for (const p of data.providers) {
-    const q = pickQuote(p.quotes);
-    if (!q || !p.name) continue;
-    const info = findProvider(p.name, p.alias);
-    const received = q.receivedAmount as number;
-    // Drop obviously broken data points (more than 10% away from mid).
-    if (received / amount < mid * 0.9 || received / amount > mid * 1.05) continue;
-    rows.push(
-      rowFromQuote({
-        key: info?.key ?? `live-${p.alias ?? p.id}`,
-        name: info?.name ?? p.name,
-        amount,
-        mid,
-        fee: q.fee ?? 0,
-        rate: q.rate as number,
-        received,
-        kind: info?.kind ?? (p.type === 'bank' ? 'bank' : 'app'),
-        source: 'live',
-        url: info?.url,
-        logo: p.logos?.normal?.svgUrl ?? p.logos?.normal?.pngUrl ?? p.logo ?? undefined,
-        delivery: deliveryLabel(q.deliveryEstimation?.duration?.min, q.deliveryEstimation?.duration?.max) ?? info?.speed,
-        collectedAt: q.dateCollected,
-        note: info?.note,
-      }),
-    );
-  }
-  // Keep the best row per provider key.
-  const best = new Map<string, QuoteRow>();
-  for (const r of rows) if (!best.has(r.key) || best.get(r.key)!.received < r.received) best.set(r.key, r);
-  return { rows: [...best.values()], mid, source };
-}
-
-interface WiseQuoteOption {
-  payIn?: string;
-  disabled?: boolean;
-  fee?: { total?: number };
-  targetAmount?: number;
-  formattedEstimatedDelivery?: string;
-}
-
-const FUNDING: [string, string[]][] = [
-  ['Bank transfer', ['BANK_TRANSFER']],
-  ['Debit card', ['DEBIT', 'VISA_DEBIT_OR_PREPAID', 'CARD']],
-  ['Credit card', ['CREDIT', 'VISA_CREDIT']],
-];
-
-/** Wise's public (unauthenticated) quote, which prices the same transfer for every funding method. */
-export async function fetchWiseFunding(amount: number): Promise<FundingOption[] | null> {
-  if (mockEnabled()) return null;
-  try {
-    const res = await fetch('https://api.wise.com/v3/quotes/', {
-      method: 'POST',
-      cache: 'no-store',
-      signal: AbortSignal.timeout(7000),
-      headers: { 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify({ sourceCurrency: 'USD', targetCurrency: 'INR', sourceAmount: amount }),
+  // Comparison estimates and Wise's own quote run in parallel within the caller's budget.
+  const comparisonP = (async () => {
+    if (demo) return { data: demoComparison(amount, now), retrievedAt: new Date(now).toISOString() };
+    if (!access.enabled) return null;
+    const url = `${base}/${version}/comparisons?sourceCurrency=USD&targetCurrency=INR&sendAmount=${amount}&sourceCountry=US&targetCountry=IN`;
+    return fetchJson(url, {
+      revalidate: 300,
+      timeoutMs: 7000,
+      signal: opts.signal,
+      headers: access.token ? { authorization: `Bearer ${access.token}` } : undefined,
     });
-    if (!res.ok) return null;
-    const d = (await res.json()) as { paymentOptions?: WiseQuoteOption[] };
-    const opts = (d.paymentOptions ?? []).filter((o) => !o.disabled && typeof o.targetAmount === 'number');
-    const out: FundingOption[] = [];
-    for (const [method, codes] of FUNDING) {
-      const o = codes.map((c) => opts.find((x) => x.payIn === c)).find(Boolean);
-      if (!o) continue;
-      out.push({
-        method,
-        fee: Math.round((o.fee?.total ?? 0) * 100) / 100,
-        received: o.targetAmount as number,
-        perUsd: Math.round(((o.targetAmount as number) / amount) * 10000) / 10000,
-        delivery: o.formattedEstimatedDelivery,
-      });
+  })();
+  const wiseQuoteP = (async () => {
+    if (demo || opts.wiseQuote === false) return null;
+    return fetchJson(`${base}/${version}/quotes`, {
+      method: 'POST',
+      body: JSON.stringify({ sourceCurrency: 'USD', targetCurrency: 'INR', sourceAmount: amount }),
+      revalidate: 300,
+      timeoutMs: 7000,
+      signal: opts.signal,
+    });
+  })();
+  const [compR, wiseR] = await Promise.allSettled([comparisonP, wiseQuoteP]);
+
+  // Wise's own quote.
+  let wiseRow: QuoteRow | null = null;
+  let funding: FundingOption[] | null = null;
+  if (demo || opts.wiseQuote === false) {
+    sources.push({ id: WISE_QUOTE_SOURCE_ID, label: 'Wise quote', status: 'disabled', access: null, detail: demo ? 'Not used in demo mode' : 'Skipped for this request', retrievedAt: null });
+  } else if (wiseR.status === 'fulfilled' && wiseR.value) {
+    const parsed = parseWiseQuote(wiseR.value.data, { amount, mid: mid.rate, now, retrievedAt: wiseR.value.retrievedAt, env });
+    wiseRow = parsed.row;
+    funding = parsed.funding.length >= 2 ? parsed.funding : null;
+    if (parsed.problem) rejected.push({ name: 'Wise', sourceId: WISE_QUOTE_SOURCE_ID, reason: parsed.problem });
+    sources.push({
+      id: WISE_QUOTE_SOURCE_ID,
+      label: 'Wise quote',
+      status: parsed.row ? 'ok' : 'error',
+      access: 'documented-public',
+      detail: parsed.row ? 'Documented unauthenticated quote, for illustrative pricing' : `Unusable: ${parsed.problem}`,
+      retrievedAt: wiseR.value.retrievedAt,
+    });
+  } else {
+    sources.push({
+      id: WISE_QUOTE_SOURCE_ID,
+      label: 'Wise quote',
+      status: 'error',
+      access: 'documented-public',
+      detail: wiseR.status === 'rejected' ? errMsg(wiseR.reason) : 'No response',
+      retrievedAt: null,
+    });
+  }
+
+  // Comparison estimates.
+  let comparisonRows: QuoteRow[] = [];
+  if (compR.status === 'fulfilled' && compR.value) {
+    const parsed = parseComparison(compR.value.data, {
+      amount,
+      mid: mid.rate,
+      now,
+      retrievedAt: compR.value.retrievedAt,
+      access: demo ? 'demo' : (access.access ?? 'unauthenticated-legacy'),
+      env,
+      demo,
+    });
+    comparisonRows = parsed.rows;
+    rejected.push(...parsed.rejected);
+    sources.push({
+      id: COMPARISON_SOURCE_ID,
+      label: 'Wise comparison data',
+      status: parsed.rows.length === 0 ? 'error' : parsed.rejected.length ? 'partial' : 'ok',
+      access: demo ? 'demo' : access.access,
+      detail: `${parsed.rows.length} usable, ${parsed.rejected.length} rejected. ${demo ? 'Demo payload.' : access.reason}`,
+      retrievedAt: compR.value.retrievedAt,
+    });
+  } else {
+    sources.push({
+      id: COMPARISON_SOURCE_ID,
+      label: 'Wise comparison data',
+      status: access.enabled || demo ? 'error' : 'disabled',
+      access: access.access,
+      detail: compR.status === 'rejected' ? errMsg(compR.reason) : access.reason,
+      retrievedAt: null,
+    });
+  }
+
+  // Wise's own quote replaces Wise's row from the comparison feed; keep the feed's number as context.
+  if (wiseRow) {
+    const fromFeed = comparisonRows.find((r) => r.key === 'wise');
+    if (fromFeed) {
+      wiseRow.cautions.push(
+        `Wise’s comparison feed reports ₹${Math.round(fromFeed.received).toLocaleString('en-IN')} with a $${fromFeed.fee?.toFixed(2)} fee for US senders; it does not state the pay-in method.`,
+      );
+      comparisonRows = comparisonRows.filter((r) => r.key !== 'wise');
     }
-    return out.length >= 2 ? out : null;
-  } catch {
-    return null;
-  }
-}
-
-/** `withFunding` adds an uncached POST to Wise, so the statically regenerated page skips it and the browser fetches it. */
-export async function getQuotes(amount: number, { withFunding = true } = {}): Promise<QuotesPayload> {
-  const fundingP = withFunding ? fetchWiseFunding(amount) : Promise.resolve(null);
-  const live = await getLiveMid().catch(() => null);
-  let mid = live?.rate ?? NaN;
-  let midSource = live?.source ?? '';
-  let liveRows: QuoteRow[] = [];
-  let liveSource: string | null = null;
-  let liveError: string | null = null;
-
-  try {
-    const r = await fetchLiveQuotes(amount, mid);
-    liveRows = r.rows;
-    liveSource = r.source;
-    if (!Number.isFinite(mid)) {
-      mid = r.mid;
-      midSource = 'Wise comparison';
-    }
-  } catch (e) {
-    liveError = errMsg(e);
   }
 
-  if (!Number.isFinite(mid)) {
-    throw new Error(`No mid market rate available. ${liveError ?? ''}`);
-  }
+  const covered = new Set([...comparisonRows.map((r) => r.key), ...(wiseRow ? ['wise'] : [])]);
+  const models = estimateAll(amount, mid.rate, covered, now, env);
+  sources.push({
+    id: SNAPSHOT_SOURCE.id,
+    label: SNAPSHOT_SOURCE.label,
+    status: models.length ? 'ok' : 'disabled',
+    access: 'research',
+    detail: models.length ? `${models.length} providers modelled. ${SNAPSHOT_SOURCE.detail}` : 'Snapshot is older than the configured limit',
+    retrievedAt: null,
+  });
 
-  // Recompute live rows' spread against the same mid we show everywhere else.
-  liveRows = liveRows.map((r) => ({
-    ...r,
-    vsMidPct: Math.round((r.perUsd / mid - 1) * 100 * 1000) / 1000,
-    shortfall: Math.round(mid * amount - r.received),
-  }));
-
-  const covered = new Set(liveRows.map((r) => r.key));
-  const rows = sortRows([...liveRows, ...estimateAll(amount, mid, covered)]);
-
+  const rows = sortRows([...(wiseRow ? [wiseRow] : []), ...comparisonRows, ...models]);
   return {
     amount,
     mid,
-    midSource,
     rows,
-    liveCount: liveRows.length,
-    liveSource,
-    liveError,
-    promoEstimate: promoEstimate(amount, mid),
-    funding: await fundingP,
-    generatedAt: new Date().toISOString(),
+    rejected,
+    sources,
+    funding,
+    summary: summarize(rows, now),
+    generatedAt: new Date(now).toISOString(),
+    demo,
   };
 }

@@ -1,41 +1,43 @@
-import { MID_SOURCES, getHistory } from '@/lib/fx';
-import { errMsg } from '@/lib/http';
-import { fetchLiveQuotes } from '@/lib/quotes';
+import { alertConfig, comparisonAccess } from '@/lib/config';
+import { getHistory, getLiveMid } from '@/lib/fx';
+import { getQuotes } from '@/lib/quotes';
 import { RANGES } from '@/lib/types';
+import { errMsg } from '@/lib/util';
 
 export const dynamic = 'force-dynamic';
 
-// Probes every upstream source so you can see which ones work from Vercel's servers.
+// Which upstream sources answer, and what was rejected. Never includes tokens, topics or thresholds.
 export async function GET() {
   const t0 = Date.now();
-  const mids = await Promise.all(
-    MID_SOURCES.map(async (s) => {
-      const t = Date.now();
-      try {
-        const v = await s.run();
-        return { source: s.name, ok: true, rate: v.rate, time: v.time, ms: Date.now() - t };
-      } catch (e) {
-        return { source: s.name, ok: false, error: errMsg(e), ms: Date.now() - t };
-      }
-    }),
+  const signal = AbortSignal.timeout(20_000);
+  const [mid, history, quotes] = await Promise.all([
+    getLiveMid(signal).catch((e) => ({ mid: null, attempts: [errMsg(e)] })),
+    Promise.all(
+      RANGES.map((r) =>
+        getHistory(r, signal).then((h) => ({ range: r, ok: h.points.length > 0, source: h.source, points: h.points.length, attempts: h.attempts })),
+      ),
+    ),
+    getQuotes(1000, { signal }).catch((e) => ({ error: errMsg(e) })),
+  ]);
+  const access = comparisonAccess(process.env);
+  const alerts = alertConfig(process.env);
+  return Response.json(
+    {
+      ms: Date.now() - t0,
+      mid,
+      history,
+      comparisonAccess: { enabled: access.enabled, mode: access.access, detail: access.reason },
+      quotes:
+        'error' in quotes
+          ? quotes
+          : {
+              sources: quotes.sources,
+              rejected: quotes.rejected,
+              rows: quotes.rows.map((r) => ({ name: r.name, origin: r.origin, freshness: r.freshness, received: r.received, fee: r.fee })),
+              summary: quotes.summary,
+            },
+      serverAlerts: { deliveryConfigured: Boolean(alerts.topic), authConfigured: Boolean(alerts.secret) },
+    },
+    { headers: { 'cache-control': 'public, s-maxage=60' } },
   );
-  const history = await Promise.all(
-    RANGES.map(async (r) => {
-      try {
-        const h = await getHistory(r);
-        return { range: r, ok: true, source: h.source, points: h.points.length, fallbacks: h.fallbacks };
-      } catch (e) {
-        return { range: r, ok: false, error: errMsg(e) };
-      }
-    }),
-  );
-  let comparison: unknown;
-  try {
-    const mid = mids.find((m) => m.ok && 'rate' in m)?.rate ?? NaN;
-    const q = await fetchLiveQuotes(1000, mid as number);
-    comparison = { ok: true, source: q.source, mid: q.mid, providers: q.rows.map((r) => `${r.name} ${r.perUsd}`) };
-  } catch (e) {
-    comparison = { ok: false, error: errMsg(e) };
-  }
-  return Response.json({ ms: Date.now() - t0, mids, history, comparison }, { headers: { 'cache-control': 'no-store' } });
 }
