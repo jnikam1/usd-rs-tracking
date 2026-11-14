@@ -16,6 +16,8 @@ function mid(over: Partial<MidInfo> = {}): MidInfo {
     retrievedAt: new Date(NOW).toISOString(),
     intraday: true,
     freshness: 'fresh',
+    freshUntil: new Date(NOW + 30 * 60_000).toISOString(),
+    staleUntil: new Date(NOW + 72 * 3600_000).toISOString(),
     ...over,
   };
 }

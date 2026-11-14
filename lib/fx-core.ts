@@ -158,6 +158,8 @@ export async function resolveMid(
       retrievedAt: r.value.retrievedAt,
       intraday: s.intraday,
       freshness: v.freshness,
+      freshUntil: new Date(cand.observedAt + rule.freshMs).toISOString(),
+      staleUntil: new Date(cand.observedAt + rule.maxMs).toISOString(),
     };
     if (v.freshness === 'fresh') return { mid: info, attempts };
     attempts.push(`${s.id}: usable but stale`);

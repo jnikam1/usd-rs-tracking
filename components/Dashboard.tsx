@@ -1,243 +1,237 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { inr, num, signedPct, timeAgo, usd } from '@/lib/format';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { offerEstimate, offerStatus, regularRowFor } from '@/lib/compute';
+import { usd } from '@/lib/format';
+import { OFFERS } from '@/lib/providers';
+import { QuoteLoader, httpQuoteFetcher } from '@/lib/quoteLoader';
 import type { QuotesPayload, RatesPayload } from '@/lib/types';
-import AlertsPanel from './AlertsPanel';
-import Leaderboard from './Leaderboard';
-import Promos from './Promos';
+import Alerts from './Alerts';
+import Calculator from './Calculator';
+import Header from './Header';
+import MarketCard from './MarketCard';
+import Offers from './Offers';
+import ProviderDrawer from './ProviderDrawer';
 import RateChart from './RateChart';
+import Results from './Results';
+import Saved from './Saved';
+import SummaryCards from './SummaryCards';
+import { localTime, useMounted } from './ui';
 
-const PRESETS = [100, 500, 1000, 2500, 5000, 10000];
 const AMOUNT_KEY = 'harpaisa.amount';
+const NEW_KEY = 'harpaisa.newCustomer';
+const REFRESH_MS = 2 * 60_000;
+const OLD_MS = 10 * 60_000;
+
+type QState =
+  | { status: 'idle' }
+  | { status: 'loading'; amount: number }
+  | { status: 'error'; amount: number; error: string; at: number };
 
 export default function Dashboard({
   initialRates,
   initialQuotes,
+  serverNow,
+  children,
 }: {
   initialRates: RatesPayload | null;
   initialQuotes: QuotesPayload | null;
+  serverNow: number;
+  children?: React.ReactNode;
 }) {
+  const mounted = useMounted();
+  // Start from the server's clock so the first render matches, then follow the real clock.
+  const [now, setNow] = useState(serverNow);
   const [rates, setRates] = useState<RatesPayload | null>(initialRates);
+  const [ratesError, setRatesError] = useState<string | null>(null);
   const [quotes, setQuotes] = useState<QuotesPayload | null>(initialQuotes);
   const [amount, setAmount] = useState<number>(initialQuotes?.amount ?? 1000);
-  const [draft, setDraft] = useState<string>(String(initialQuotes?.amount ?? 1000));
-  const [loadingQuotes, setLoadingQuotes] = useState(false);
-  const [quoteError, setQuoteError] = useState<string | null>(null);
-  const [now, setNow] = useState(() => Date.now());
-  const reqId = useRef(0);
+  const [q, setQ] = useState<QState>({ status: 'idle' });
+  const [newCustomer, setNewCustomer] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const loader = useRef<QuoteLoader<QuotesPayload> | null>(null);
   const amountRef = useRef(amount);
   amountRef.current = amount;
 
-  // Restore the last amount the user picked.
-  useEffect(() => {
-    try {
-      const saved = Number(localStorage.getItem(AMOUNT_KEY));
-      if (saved >= 10 && saved <= 100000 && saved !== amount) {
-        setAmount(saved);
-        setDraft(String(saved));
-      }
-    } catch {
-      /* storage blocked */
+  const request = useCallback(async (amt: number) => {
+    loader.current ??= new QuoteLoader(httpQuoteFetcher());
+    setQ({ status: 'loading', amount: amt });
+    const r = await loader.current.load(amt);
+    if (r.status === 'superseded') return;
+    if (r.status === 'ok') {
+      setQuotes(r.data);
+      setQ({ status: 'idle' });
+    } else {
+      setQ({ status: 'error', amount: amt, error: r.error, at: Date.now() });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadRates = useCallback(async () => {
     try {
-      const r = await fetch('/api/rates');
-      const d = (await r.json()) as RatesPayload;
-      if (d.mid) setRates(d);
-    } catch {
-      /* keep last good value */
-    }
-  }, []);
-
-  const loadQuotes = useCallback(async (amt: number) => {
-    const id = ++reqId.current;
-    setLoadingQuotes(true);
-    try {
-      const r = await fetch(`/api/quotes?amount=${amt}`);
-      const d = await r.json();
-      if (id !== reqId.current) return;
-      if (!r.ok) throw new Error(d.error ?? `HTTP ${r.status}`);
-      setQuotes(d as QuotesPayload);
-      setQuoteError(null);
+      const res = await fetch('/api/rates');
+      const d = (await res.json()) as RatesPayload;
+      if (d.mid) {
+        setRates(d);
+        setRatesError(null);
+      } else setRatesError(d.errors?.[0] ?? `HTTP ${res.status}`);
     } catch (e) {
-      if (id === reqId.current) setQuoteError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (id === reqId.current) setLoadingQuotes(false);
+      setRatesError(e instanceof Error ? e.message : String(e));
     }
   }, []);
 
-  // Fetch quotes when the amount settles.
+  // Restore preferences, start clocks and refresh loops.
   useEffect(() => {
-    if (quotes?.amount === amount) return;
-    const t = setTimeout(() => loadQuotes(amount), 350);
+    setNow(Date.now());
+    try {
+      const saved = Number(localStorage.getItem(AMOUNT_KEY));
+      if (saved >= 10 && saved <= 100000) setAmount(Math.round(saved));
+      setNewCustomer(localStorage.getItem(NEW_KEY) === '1');
+    } catch {
+      /* storage blocked */
+    }
+    if (!initialRates?.mid) loadRates();
+    const tick = setInterval(() => setNow(Date.now()), 30_000);
+    const r = setInterval(loadRates, 60_000);
+    const qt = setInterval(() => request(amountRef.current), REFRESH_MS);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        setNow(Date.now());
+        loadRates();
+        request(amountRef.current);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(tick);
+      clearInterval(r);
+      clearInterval(qt);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // New amount: fetch it. Figures for a different amount are never shown as this amount.
+  useEffect(() => {
     try {
       localStorage.setItem(AMOUNT_KEY, String(amount));
     } catch {
       /* ignore */
     }
-    return () => clearTimeout(t);
-  }, [amount, quotes?.amount, loadQuotes]);
-
-  // Keep things fresh while the page is open.
-  useEffect(() => {
-    if (!initialRates?.mid) loadRates();
-    // The server rendered page skips the funding method prices; fetch the full quote set once.
-    if (initialQuotes && !initialQuotes.funding) loadQuotes(initialQuotes.amount);
-    const r = setInterval(loadRates, 60_000);
-    const q = setInterval(() => loadQuotes(amountRef.current), 5 * 60_000);
-    const n = setInterval(() => setNow(Date.now()), 30_000);
-    return () => {
-      clearInterval(r);
-      clearInterval(q);
-      clearInterval(n);
-    };
+    if (quotes?.amount !== amount) request(amount);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  function commitDraft(v: string) {
-    setDraft(v);
-    const n = Math.round(Number(v.replace(/[^0-9.]/g, '')));
-    if (n >= 10 && n <= 100000) setAmount(n);
-  }
+  }, [amount]);
 
-  const mid = rates?.mid?.rate ?? quotes?.mid ?? null;
-  const rows = quotes?.rows ?? [];
-  const liveRows = rows.filter((r) => r.source === 'live');
-  const pool = liveRows.length ? liveRows : rows;
-  const best = pool[0];
-  const bestEstimate = rows.find((r) => r.source === 'estimate');
-  const estimateBeatsLive = best?.source === 'live' && bestEstimate && bestEstimate.received > best.received;
-  const wise = pool.find((r) => r.key === 'wise');
-  const bank = pool.find((r) => r.key === 'chase') ?? pool.filter((r) => r.kind === 'bank').at(-1);
-  const worst = pool.at(-1);
-  const stale = quotes && quotes.amount !== amount;
+  useEffect(() => {
+    try {
+      localStorage.setItem(NEW_KEY, newCustomer ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }, [newCustomer]);
 
-  const heroFigure = best ? inr(best.received) : '₹–';
+  const current = quotes && quotes.amount === amount ? quotes : null;
+  const openRow = current?.rows.find((r) => r.id === openId) ?? null;
+  const ageMs = current ? now - Date.parse(current.generatedAt) : 0;
 
-  const compareLine = useMemo(() => {
-    if (!best) return null;
-    const parts: string[] = [];
-    if (wise && wise.key !== best.key) parts.push(`Wise pays ${inr(wise.received)}`);
-    if (bank && bank.key !== best.key) parts.push(`a ${bank.name.replace(' (wire)', '')} wire about ${inr(bank.received)}`);
-    if (!parts.length) return null;
-    const gap = worst ? best.received - worst.received : 0;
-    return `${parts.join(', ')}. Choosing the app is worth ${inr(gap)} on this transfer.`;
-  }, [best, wise, bank, worst]);
+  const remitly = OFFERS.find((o) => o.id === 'remitly-welcome');
+  const welcome =
+    newCustomer && current && remitly
+      ? {
+          provider: remitly.provider,
+          endsOn: remitly.endsOn,
+          estimate:
+            offerStatus(remitly, now) === 'expired'
+              ? ({ status: 'expired', endsOn: remitly.endsOn as string } as const)
+              : offerEstimate(remitly, current.amount, current.mid.rate, regularRowFor(current.rows, 'remitly', now), now),
+        }
+      : null;
 
   return (
     <>
-      <header className="masthead">
-        <div className="wordmark">
-          <strong>Har Paisa</strong>
-          <span>USD to INR, every paisa counted</span>
-        </div>
-        {rates?.mid ? (
-          <div className="ticker" aria-live="polite">
-            <span>
-              <span className="live-dot" aria-hidden="true" />
-              Mid market <b>{inr(rates.mid.rate, 4)}</b>
-            </span>
-            {rates.change24h && (
-              <span className={rates.change24h.pct >= 0 ? 'up' : 'down'}>
-                {rates.change24h.pct >= 0 ? '▲' : '▼'} {signedPct(rates.change24h.pct)} in 24 hrs
-              </span>
-            )}
-            <span>
-              {rates.mid.source}, {timeAgo(rates.mid.time, now)}
-            </span>
+      <Header mid={rates?.mid ?? current?.mid ?? null} now={now} />
+      <main className="wrap">
+        <section id="compare" aria-labelledby="page-title">
+          <h1 className="page-title" id="page-title">
+            Send dollars to India for the most rupees
+          </h1>
+          <p>
+            Compare provider quotes and comparison estimates after every fee, see where each number comes from and how old it is, and
+            get told when your rate target is reached.
+          </p>
+          <div className="compare">
+            <div className="c-calc">
+              <Calculator amount={amount} onAmount={setAmount} newCustomer={newCustomer} onNewCustomer={setNewCustomer} />
+            </div>
+            <div className="c-extra">
+              <MarketCard rates={rates} ratesError={ratesError} now={now} mounted={mounted} funding={current?.funding ?? null} amount={current ? current.amount : null} />
+              <Saved quotes={current} onRestore={setAmount} mounted={mounted} />
+            </div>
+            <div className="c-main">
+              {!current && q.status === 'loading' && <div className="banner info">Getting quotes for {usd(amount)}…</div>}
+              {!current && q.status === 'error' && (
+                <div className="banner error" role="alert">
+                  <span>
+                    Could not get quotes for {usd(q.amount)}: {q.error}
+                  </span>
+                  <button className="btn secondary small" type="button" onClick={() => request(amount)}>
+                    Retry
+                  </button>
+                </div>
+              )}
+              {current && q.status === 'error' && (
+                <div className="banner warn" role="alert">
+                  <span>
+                    Refresh failed{mounted ? ` at ${localTime(q.at)}` : ''}: {q.error}. Showing figures from{' '}
+                    {Math.max(1, Math.round(ageMs / 60_000))} min ago; rows lose their fresh status as they age.
+                  </span>
+                  <button className="btn secondary small" type="button" onClick={() => request(amount)}>
+                    Retry
+                  </button>
+                </div>
+              )}
+              {current && q.status !== 'error' && ageMs > OLD_MS && (
+                <div className="banner warn">
+                  <span>These figures are {Math.round(ageMs / 60_000)} min old.</span>
+                  <button className="btn secondary small" type="button" onClick={() => request(amount)} disabled={q.status === 'loading'}>
+                    {q.status === 'loading' ? 'Refreshing…' : 'Refresh'}
+                  </button>
+                </div>
+              )}
+              {current && (
+                <p className="small muted" style={{ marginBottom: 12 }}>
+                  {current.demo ? 'Demo data. ' : ''}Figures for {usd(current.amount)}
+                  {mounted ? `, generated ${localTime(current.generatedAt)}` : ''}.{' '}
+                  <button className="btn ghost small" type="button" onClick={() => request(amount)} disabled={q.status === 'loading'} style={{ minHeight: 0, padding: 0 }}>
+                    {q.status === 'loading' ? 'Refreshing…' : 'Refresh now'}
+                  </button>
+                </p>
+              )}
+              <SummaryCards quotes={current} amount={amount} now={now} onOpen={setOpenId} welcome={welcome} />
+              {current ? (
+                <Results key={current.amount} quotes={current} now={now} onOpen={setOpenId} />
+              ) : (
+                <div className="results" aria-busy={q.status === 'loading'}>
+                  {[0, 1, 2].map((i) => (
+                    <div key={i} className="prow" style={{ marginBottom: 8 }}>
+                      <div className="skeleton" style={{ height: 20, width: '50%' }} />
+                      <div className="skeleton" style={{ height: 24, width: 110 }} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-        ) : (
-          <div className="ticker">Live rate unavailable right now</div>
-        )}
-      </header>
-
-      <section className="hero" aria-labelledby="hero-label">
-        <p className="hero-line" id="hero-label">
-          Send{' '}
-          <label className="amount-field">
-            <span aria-hidden="true">$</span>
-            <span className="visually-hidden">Amount in US dollars</span>
-            <input
-              inputMode="numeric"
-              value={draft}
-              onChange={(e) => commitDraft(e.target.value)}
-              onBlur={() => setDraft(String(amount))}
-              aria-describedby="amount-help"
-              style={{ width: `${Math.max(3, draft.length) + 0.4}ch` }}
-            />
-          </label>{' '}
-          to India right now and the best {best?.source === 'estimate' ? 'estimated ' : ''}quote pays
-        </p>
-        <p className={`hero-figure${loadingQuotes || stale ? ' loading' : ''}`} aria-live="polite">
-          {heroFigure}
-        </p>
-        {best && mid ? (
-          <>
-            <p className="hero-sub">
-              with <strong>{best.name}</strong>. That is <strong>{inr(best.perUsd, 2)}</strong> for each dollar after every
-              fee, against a mid market rate of {inr(mid, 2)}.
-            </p>
-            {compareLine && <p className="hero-note">{compareLine}</p>}
-            {estimateBeatsLive && bestEstimate && (
-              <p className="hero-note">
-                Not in the live feed: {bestEstimate.name} may pay about {inr(bestEstimate.received)} based on its spread
-                in the 13 Nov snapshot. Check its app before you send.
-              </p>
-            )}
-          </>
-        ) : (
-          <p className="hero-sub">{quoteError ? `Quotes are unavailable: ${quoteError}` : 'Loading quotes…'}</p>
-        )}
-        <div className="chips" role="group" aria-label="Quick amounts" id="amount-help">
-          {PRESETS.map((p) => (
-            <button
-              key={p}
-              type="button"
-              className="chip"
-              aria-pressed={amount === p}
-              onClick={() => {
-                setAmount(p);
-                setDraft(String(p));
-              }}
-            >
-              {usd(p)}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <div className="grid">
-        <section className="area-board" aria-labelledby="board-title">
-          <Leaderboard
-            quotes={quotes}
-            amount={amount}
-            loading={loadingQuotes || Boolean(stale)}
-            error={quoteError}
-            now={now}
-          />
         </section>
 
-        <section className="area-chart" aria-labelledby="chart-title">
-          <RateChart current={rates?.mid?.rate ?? null} year={rates?.year ?? null} />
+        <section className="section" id="trends" aria-label="Trends">
+          <RateChart mid={rates?.mid ?? null} year={rates?.year ?? null} now={now} mounted={mounted} />
         </section>
 
-        <section className="area-promos" aria-labelledby="promos-title">
-          <Promos amount={amount} estimate={quotes?.promoEstimate ?? null} />
-        </section>
-
-        <section className="area-alerts" aria-labelledby="alerts-title">
-          <AlertsPanel mid={rates?.mid?.rate ?? null} change24h={rates?.change24h?.pct ?? null} />
-        </section>
-      </div>
-
-      {mid && (
-        <p className="visually-hidden">
-          Mid market {num(mid, 4)} rupees per dollar.
-        </p>
-      )}
+        <Offers quotes={current} amount={amount} now={now} newCustomer={newCustomer} onNewCustomer={setNewCustomer} />
+        <Alerts rates={rates} now={now} />
+        {children}
+      </main>
+      <ProviderDrawer row={openRow} quotes={current} now={now} mounted={mounted} onClose={() => setOpenId(null)} />
     </>
   );
 }

@@ -142,6 +142,9 @@ export interface MidInfo {
   retrievedAt: string;
   intraday: boolean;
   freshness: Freshness;
+  /** Freshness windows so the browser can downgrade the rate as it ages. */
+  freshUntil: string;
+  staleUntil: string;
 }
 
 export interface QuotesPayload {

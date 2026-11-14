@@ -142,7 +142,7 @@ export function parseComparison(data: unknown, o: ComparisonOptions): { rows: Qu
         payoutMethod: 'bank_deposit',
         sourceId: o.demo ? 'demo' : COMPARISON_SOURCE_ID,
         sourceLabel: o.demo ? 'Demo data' : 'Wise comparison data',
-        sourceUrl: COMPARISON_DOCS,
+        sourceUrl: o.demo ? undefined : COMPARISON_DOCS,
         access: o.access,
         collectedAt: new Date(collected).toISOString(),
         retrievedAt: o.retrievedAt,

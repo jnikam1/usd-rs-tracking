@@ -386,6 +386,12 @@ export function offerEstimate(o: Offer, amount: number, mid: number, regular: Qu
   };
 }
 
+/** The provider's regular figure to compare an offer against: a current row first, the research model otherwise. */
+export function regularRowFor(rows: QuoteRow[], key: string, now = Date.now()): QuoteRow | null {
+  const usable = rows.filter((r) => r.key === key && currentFreshness(r, now) !== 'unavailable');
+  return usable.find((r) => r.origin !== 'snapshot-model') ?? usable[0] ?? null;
+}
+
 /** Backwards compatible helper: Remitly's welcome model with the snapshot model as the regular rate. */
 export function promoEstimate(amount: number, mid: number, now = Date.now()) {
   const o = OFFERS.find((x) => x.id === 'remitly-welcome');

@@ -15,6 +15,8 @@ export function demoMid(now = Date.now()): MidInfo {
     retrievedAt: new Date(now).toISOString(),
     intraday: true,
     freshness: 'fresh',
+    freshUntil: new Date(now + 30 * 60_000).toISOString(),
+    staleUntil: new Date(now + 72 * 3600_000).toISOString(),
   };
 }
 
