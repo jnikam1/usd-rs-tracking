@@ -85,6 +85,8 @@ export default function Dashboard({
   // Keep things fresh while the page is open.
   useEffect(() => {
     if (!initialRates?.mid) loadRates();
+    // The server rendered page skips the funding method prices; fetch the full quote set once.
+    if (initialQuotes && !initialQuotes.funding) loadQuotes(initialQuotes.amount);
     const r = setInterval(loadRates, 60_000);
     const q = setInterval(() => loadQuotes(amountRef.current), 5 * 60_000);
     const n = setInterval(() => setNow(Date.now()), 30_000);

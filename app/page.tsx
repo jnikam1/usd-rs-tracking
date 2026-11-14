@@ -7,7 +7,7 @@ import { getRates } from '@/lib/rates';
 export const revalidate = 120;
 
 export default async function Page() {
-  const [rates, quotes] = await Promise.all([getRates().catch(() => null), getQuotes(1000).catch(() => null)]);
+  const [rates, quotes] = await Promise.all([getRates().catch(() => null), getQuotes(1000, { withFunding: false }).catch(() => null)]);
 
   return (
     <main className="page">

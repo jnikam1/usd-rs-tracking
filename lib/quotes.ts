@@ -152,8 +152,9 @@ export async function fetchWiseFunding(amount: number): Promise<FundingOption[] 
   }
 }
 
-export async function getQuotes(amount: number): Promise<QuotesPayload> {
-  const fundingP = fetchWiseFunding(amount);
+/** `withFunding` adds an uncached POST to Wise, so the statically regenerated page skips it and the browser fetches it. */
+export async function getQuotes(amount: number, { withFunding = true } = {}): Promise<QuotesPayload> {
+  const fundingP = withFunding ? fetchWiseFunding(amount) : Promise.resolve(null);
   const live = await getLiveMid().catch(() => null);
   let mid = live?.rate ?? NaN;
   let midSource = live?.source ?? '';
